@@ -14434,13 +14434,20 @@ function nextNode() {
   return null;
 }
 // the Pokémon a Journey stage takes: its own region's (the owner's rule: each Journey is locked to its region's Pokémon; Kanto's
-// are Gen 1's, regional forms their region's); the PvP modes, Explore and the Battle Tower take any you own
+// are Gen 1's, regional forms their region's); the PvP modes and Explore take any you own, the Battle Tower its wing's (towerOk)
 const journeyGen = nd => regionGen(nd.ep.id);
 // (the owner's rule, 2026-10-15) in a Journey stage every Pokémon you bring battles at most at that region's level cap right now: a
 // Lv 70 Steelix, evolved from a Kanto Onix, fights Falkner at Lv 7. Only for that battle: its real level, Exp. and the rest don't change
 // (in a Journey in parts, that part's own cap: stageCap)
 const journeyProg = (k, nd) => { const p = S.ops[k], cap = stageCap(nd); return p && p.lvl > cap ? { ...p, lvl: cap } : p; };
 const journeyOk = (k, nd) => gensOf(k).includes(journeyGen(nd));
+// the Battle Tower (the owner's rules, 2026-10-17): a wing takes its own region's Pokémon only (towerOk, as journeyOk: gensOf), and a
+// floor's cap is 2 levels below its strongest opposing Pokémon (towerCap, CAP_BELOW, as a Journey battle's): for you, the Demo
+// (towerSquad/towerSim) and the Trainers (towerReach, trainerWingLv)
+const towerGen = w => REGION_IDS.indexOf(w) + 1;
+const towerOk = (k, w) => gensOf(k).includes(towerGen(w));
+const towerCap = T => Math.max(1, T.lv - CAP_BELOW);
+const towerProg = (k, T) => { const p = S.ops[k], cap = towerCap(T); return p && p.lvl > cap ? { ...p, lvl: cap } : p; };
 
 // ---------- features open as the adventure goes on ----------
 // A new Trainer starts with their first region's Professor and the Journey; everything else opens on the way, a little at a time, each with a
@@ -19424,6 +19431,7 @@ const TALK_FAQ = [
   { re: /triple kick/, a: "Triple Kick strikes three times at 20, 40 and 60 power, just like Triple Axel. Each strike can miss, unless it holds Loaded Dice." },
   { re: /\bpresent\b/, a: "Present is a gift of 40, 80 or 120 power, or it heals the target a quarter of its HP, and it hits with whichever is higher, the user's Attack or Sp. Atk. With Loaded Dice it's always the 120-power gift, and it never misses." },
   { re: /wing attack|60.power|\bs1\b.*(60|bite|aerial ace)/, a: "Every 60-power attack is an S1 move here, no cooldown: Wing Attack, Bite, Aerial Ace, Water Pulse, Shock Wave... The exceptions stay S2: Round, which doubles with each use like Echoed Voice, and the ones that double in their moment: Revenge and Avalanche when the user's been hit that turn, Assurance when the target has, Barb Barrage on a poisoned target, Infernal Parade on one with a status." },
+  { re: /battle tower|tower (floor|wing)|(kanto|johto|hoenn|sinnoh|unova|kalos|alola|galar|paldea)('?s)? wing/, a: "Each Battle Tower wing only takes its own region's Pokémon, and every floor caps your team 2 levels under its strongest opponent. Johto's wing, Johto's Pokémon. Out-leveling it won't help, building the right team will." },
   { re: /cotton down/, a: "Cotton Down here only slows the other side: when an attack hits the Pokémon, each opposing Pokémon on the field drops a Speed stage. Its own partners keep their Speed." },
   { re: /analytic/, a: "Analytic here goes by the Pokémon's own Speed: once it's down a stage or more, its moves are 50% stronger, and 50% more for each stage further down, so ×1.5 at -1, ×2 at -2, up to ×4 at -6. Paralysis and an Iron Ball count, since they're Speed stages here." },
   { re: /light ?ball/, a: "Here the Light Ball works for the whole Pikachu line: Pichu, Pikachu, Raichu and Alolan Raichu all get Attack and Sp. Atk +2 holding it (in the main games it's Pikachu only). Red's Raichu at the top of Mt. Silver holds one." },
@@ -20993,7 +21001,8 @@ function fillSlots(t, p, sl = {}) {
   if (/\{(wing|wfl|wn|wtop)\}/.test(t)) {
     const P = J && J.P, best = P ? P.best : p.lvl, ws = towerWings().filter(id => !P || !P.gens || P.gens === true || P.gens.has(REGION_IDS.indexOf(id) + 1));
     const w = ws.includes(J && J.rid) ? J.rid : ws[0] || "kanto", F = towerFloors(w);
-    Object.assign(val, { wing: REGION_NAME[w], wn: F.length, wfl: F.filter(T => T.lv <= best + 2).length, wtop: F.length ? F[F.length - 1].trainer.name : "Red" });
+    const wl = P && P.done ? trainerWingLv(P, w) : best;   // (their own Pokémon of that region, by the floors' caps: towerReach)
+    Object.assign(val, { wing: REGION_NAME[w], wn: F.length, wfl: F.filter(T => towerCap(T) <= wl).length, wtop: F.length ? F[F.length - 1].trainer.name : "Red" });
   }
   // the live events
   if (/\{(ev|rank|gems|jackpot|legend|fest|cur|vip|srv|lap)\}/.test(t)) {
@@ -24343,7 +24352,10 @@ const npcPowerEst = i => Math.round(110000 * Math.pow(npcMonLv(i) / 100, 2.9) * 
 // each Pokémon's CP on a Trainer's Registered Team (what the Stadium shows)
 const docCPs = d => d.team.map(k => Math.round(cpOf(opStats(k, d.prog[k], false, d.badges || 0).st, d.prog[k].sk)));
 // the Battle Tower floors a team of this level clears (in the wings of its regions' Journeys: gens; a trained team takes on a few levels more)
-const towerReach = (L, gens) => towerWings().filter(id => !gens || gens === true || gens.has(REGION_IDS.indexOf(id) + 1)).reduce((a, id) => a + towerFloors(id).filter(T => T.lv <= L + 2).length, 0);
+// a Trainer's Battle Tower floors: in each wing they've opened, those whose cap (2 under the floor's strongest) their own Pokémon of
+// that region reach (the owner's rules: region lock and floor caps, trainerWingLv); L alone (no progress): their best everywhere
+const trainerWingLv = (P, w) => P.done.includes(w) ? P.best : P.region === w ? P.lv : 0;
+const towerReach = (L, gens, P) => towerWings().filter(id => !gens || gens === true || gens.has(REGION_IDS.indexOf(id) + 1)).reduce((a, id) => a + towerFloors(id).filter(T => towerCap(T) <= (P ? trainerWingLv(P, id) : L)).length, 0);
 function npcValue(i, key) {
   const p = person(i), L = p.lvl;
   if (key === "power") return npcPowerEst(i);
@@ -24498,7 +24510,7 @@ const SERVER_RANKS = [
   { id: "dex", n: "Pokédex", d: `Pokémon caught for the National Pokédex, out of ${DEX_N}.`, me: () => dexCaught(), npc: i => npcValue(i, "dex"), exact: (d, v) => Math.max(v, d.roster.length) },
   { id: "ranked", n: "Ranked points", d: "Ranked Battle points right now.", me: () => S.ladder.pts, npc: i => S.ladder.pop[i] },
   { id: "vip", n: "VIP", d: "VIP level, from Recharges.", me: () => vip(), npc: i => npcVip(i) },
-  { id: "tower", n: "Battle Tower floors", d: "Battle Tower floors cleared, in every region's wing.", me: () => S.tower || 0, npc: i => towerReach(npcMonLv(i), trainerGens(i)),
+  { id: "tower", n: "Battle Tower floors", d: "Battle Tower floors cleared, in every region's wing.", me: () => S.tower || 0, npc: i => towerReach(npcMonLv(i), trainerGens(i), trainerProg(i)),
     exact: d => towerReach(d.team.reduce((a, k) => a + d.prog[k].lvl, 0) / d.team.length) },
   { id: "best", n: "Strongest Pokémon", d: "The CP of a Trainer's single strongest Pokémon.", me: () => Math.max(0, ...Object.keys(S.ops).map(k => power(k, S.ops[k]))), npc: i => Math.round(npcPowerEst(i) / 6 * 1.12),
     exact: d => Math.max(...docCPs(d)), show: "best" },
@@ -72985,8 +72997,9 @@ function nodeSheet(nd) {
 // leaves the team (teamDrag below).
 SCREENS.team = arg => {
   const key = arg.mode;
-  // (a Journey stage: its own region's Pokémon only, journeyOk)
-  const jnd = arg.launch && arg.launch.kind === "node" ? NODES[arg.launch.id] : null, fits = k => !jnd || journeyOk(k, jnd);
+  // (a Journey stage: its own region's Pokémon only, journeyOk; a Battle Tower floor its wing's, towerOk)
+  const jnd = arg.launch && arg.launch.kind === "node" ? NODES[arg.launch.id] : null, tw = arg.launch && arg.launch.kind === "tower" ? arg.launch.w || "kanto" : null;
+  const fits = k => (!jnd || journeyOk(k, jnd)) && (!tw || towerOk(k, tw));
   if (!UI.team || UI.team.key !== key) UI.team = { key, ids: (S.team[key] || []).filter(owned).filter(fits).slice(0, ROSTER), sel: null };
   const ids = UI.team.ids;
   const pool = Object.keys(S.ops).filter(fits).filter(k => UI.el === "all" || OPS[k].types.includes(UI.el)).sort((a, b) => power(b, S.ops[b]) - power(a, S.ops[a]));
@@ -75116,7 +75129,8 @@ async function demoBreath() {
 // (DEMO_CAP: planning a Journey stage, where its Pokémon battle at most at the region's level cap: journeyProg)
 let DEMO_CAP = null;
 const dprog = k => DEMO_CAP && S.ops[k] && S.ops[k].lvl > DEMO_CAP ? { ...S.ops[k], lvl: DEMO_CAP } : S.ops[k];
-const withCap = async (nd, f) => { const was = DEMO_CAP; DEMO_CAP = stageCap(nd); try { return await f(); } finally { DEMO_CAP = was; } };
+const withLv = async (cap, f) => { const was = DEMO_CAP; DEMO_CAP = cap; try { return await f(); } finally { DEMO_CAP = was; } };
+const withCap = (nd, f) => withLv(stageCap(nd), f);
 async function simRun(ids, waves, n, goal, enemyStyle = "balanced", weather = null) {
   let win = 0, three = 0;
   for (let i = 0; i < n; i++) {
@@ -75249,6 +75263,11 @@ const ndWaves = nd => nodeWaves(nd).map(wv => convWave(wv, nd.lv, journeyG(nd)))
 const nodeSquad = nd => withCap(nd, () => squadFor(ndWaves(nd), nodeTurnGoal(nd), "balanced", nd.weather, { gen: journeyGen(nd) }));
 const nodeSim = (nd, n, goal) => withCap(nd, async () => simRun(await squadFor(ndWaves(nd), nodeTurnGoal(nd), "balanced", nd.weather, { gen: journeyGen(nd) }), ndWaves(nd), n, goal, "balanced", nd.weather));
 const towerWaves = (w, f) => { const T = towerFloor(w, f); return T.waves.map(wv => convWave(wv, T.lv, wingGen(w))); };
+// a Tower floor: the wing's region's Pokémon at most at the floor's cap (towerOk, towerCap), as on the team screen
+const towerSquad = (w, f) => withLv(towerCap(towerFloor(w, f)), () => squadFor(towerWaves(w, f), 0, "balanced", null, { gen: towerGen(w) }));
+const towerSim = (w, f, n) => withLv(towerCap(towerFloor(w, f)), async () => simRun(await squadFor(towerWaves(w, f), 0, "balanced", null, { gen: towerGen(w) }), towerWaves(w, f), n));
+// the wing's sixth-best Pokémon's level: a floor waits until six of them reach its cap
+const wingLv = w => Object.entries(S.ops).filter(([k]) => towerOk(k, w)).map(([, p]) => p.lvl).sort((a, b) => b - a)[5] || 0;
 const failKey = (k, n) => { DEMO.fails[k] = (DEMO.fails[k] || 0) + (n == null ? 1 : n); return DEMO.fails[k]; };   // (n = 0 reads the count)
 
 // ---------- power push: what the Demo does when a Battle Stadium climb stalls ----------
@@ -75995,7 +76014,7 @@ async function playHunt(h, l) {
 }
 async function playTower(w, f) {
   dsay(`Battle Tower · ${REGION_NAME[w]} Wing · Floor ${f}`, towerFloor(w, f).trainer.name);
-  const squad = await squadFor(towerWaves(w, f));
+  const squad = await towerSquad(w, f);
   await goTab("battle"); await tapAct("go", { v: "tower" }, "Battle Tower");
   if (towerOpenWings().length > 1 && UI.tw !== w) await tapAct("towerTab", { v: w }, REGION_NAME[w] + " Wing");
   await tapAct("towerGo", { w, f }, "Floor " + f);
@@ -76018,19 +76037,21 @@ async function ensureDefense() {
   await pickSquad(best);
   await closeAllModals();
 }
-async function playLadder() {
+// quick (the Stadium between Journey stages, stadiumTurn): no waiting for a Ticket or a refresh, the opponent with the best expected
+// points it has at least a 30% chance against, and true once a battle is played, won or lost
+async function playLadder(quick) {
   tickTimers();
-  const L = S.ladder;
-  if (L.tickets <= 0) await skipTime(TICKET_MS - (Date.now() - L.tTime) + 1000, "Waiting for a Ticket");
+  const L = S.ladder, games = L.wins + L.losses;
+  if (L.tickets <= 0) { if (quick) return false; await skipTime(TICKET_MS - (Date.now() - L.tTime) + 1000, "Waiting for a Ticket"); }
   await ensureDefense();
   for (let tries = 0; tries < 3; tries++) {
     const opps = ladderOpps().map(i => ({ i, doc: modeDoc(ladderDoc(i), "ranked"), p: L.pop[i] }));
-    let best = null, be = 0;
+    let best = null, be = quick ? -Infinity : 0;
     for (const o of opps) {
       const waves = [o.doc.team.map(k => npcSpec(o.doc, k))], squad = await squadFor(waves, 0, o.doc.ai, null, { pvp: true });
       const win = (await simRun(squad, waves, DEMO.fast ? 4 : 5, 0, o.doc.ai)).win;
       const ev = win * eloDelta(L.pts, o.p, true, eloK(L.pts)) + (1 - win) * eloDelta(L.pts, o.p, false, eloK(L.pts));
-      if (win >= .5 && ev > be) { be = ev; best = { ...o, squad, win }; }
+      if (win >= (quick ? .3 : .5) && ev > be) { be = ev; best = { ...o, squad, win }; }
     }
     if (best) {
       dsay("Ranked Battle", `vs ${best.doc.name} · ${tierOf(best.p).n} ${best.p} · ${Math.round(best.win * 100)}% to win`);
@@ -76038,22 +76059,23 @@ async function playLadder() {
       const before = L.pts;
       await tapAct("ladderGo", { i: best.i }, "Battle");
       await pickSquad(best.squad); await settle(); await closeAllModals();
-      return L.pts > before;
+      return quick ? L.wins + L.losses > games : L.pts > before;
     }
+    if (quick && Date.now() - L.oppT < REFRESH_MS) return false;
     if (Date.now() - L.oppT < REFRESH_MS) await skipTime(REFRESH_MS - (Date.now() - L.oppT) + 1000, "Waiting to refresh the Trainers");
     dsay("Ranked Battles", "Looking for a beatable Trainer");
     await openStadium("ladder"); await tapAct("ladderRefresh", {}, "Refresh");
   }
   return false;
 }
-// Link Battles: queue, draft (pick 5, ban 1), then battle on AUTO
-async function playRta() {
+// Link Battles: queue, draft (pick 5, ban 1), then battle on AUTO (quick: as playLadder's, at least a 30% chance)
+async function playRta(quick) {
   // check the odds against a typical opponent at this rating before queueing
   const sample = rtaOpponent(), mine = await squadFor([sample.team.map(k => npcSpec(sample, k))], 0, sample.ai, null, { pvp: true });
   const odds = (await simRun(mine, [sample.team.map(k => npcSpec(sample, k))], DEMO.fast ? 4 : 5, 0, sample.ai)).win;
   const P = S.demoPush, ready = rosterReady();
   if (ready && P.rta.day !== today()) P.rta = { day: today(), n: 0 };
-  if (ready ? P.rta.n >= 10 || odds < .3 : odds < .5 && S.rta.place === 0) return false;
+  if (quick ? odds < .3 : ready ? P.rta.n >= 10 || odds < .3 : odds < .5 && S.rta.place === 0) return false;
   if (ready) P.rta.n++;
   const built = k => S.ops[k].lvl >= levelCap(k) - 10;
   const pool = ready ? Object.keys(S.ops).filter(k => P.roster.includes(k) || built(k)) : Object.keys(S.ops);
@@ -76082,7 +76104,20 @@ async function playRta() {
     } else await new Promise(r => setTimeout(r, DEMO.fast ? 0 : 120));
   }
   await settle(); await closeAllModals();
-  return S.rta.games > games && S.rta.pts > before;
+  return S.rta.games > games && (quick || S.rta.pts > before);
+}
+// the Battle Stadium all through the Journey (the owner's rules, 2026-10-17): after every Journey stage it clears, a Stadium session
+// of 3 Ranked and 3 Link Battles (DEMO.stadQ, each mode once it's open) before it goes back to the story, a game each pass, the two
+// in turn; a mode that's closed or can't start a game now (no Ticket, no fair opponent) sits the rest of the session out
+async function stadiumTurn(Q) {
+  const n = Object.keys(S.ops).length, open = { ranked: featOn("ranked") && n >= 1, link: featOn("link") && n >= 5 };
+  for (const k of ["ranked", "link"]) if (!open[k]) Q[k] = 0;
+  const order = ["ranked", "link"].filter(k => Q[k] > 0).sort((a, b) => Q[b] - Q[a] || (b === DEMO.stadTurn) - (a === DEMO.stadTurn));
+  for (const k of order) {
+    if (await (k === "ranked" ? playLadder(true) : playRta(true))) { Q[k]--; DEMO.stadTurn = k === "ranked" ? "link" : "ranked"; return true; }
+    Q[k] = 0;
+  }
+  return false;
 }
 // try the next piece of content the team can win; true if something was gained
 async function progress() {
@@ -76104,9 +76139,9 @@ async function progress() {
   if (DEMO.twNext !== false) for (const kind of DEMO.sideTurn === "explore" ? ["explore", "tower"] : ["tower", "explore"]) {
     if (kind === "tower") {
       const T = featOn("tower") ? towerOpenWings().filter(id => towerLeft(id) > 0).map(w => towerFloor(w, towerDone(w) + 1))
-        .filter(T => T.lv <= teamLv - 3 && failKey("tw" + T.id, 0) < 4).sort((a, b) => a.lv - b.lv)[0] : null;
+        .filter(T => towerCap(T) <= wingLv(T.wing) && failKey("tw" + T.id, 0) < 4).sort((a, b) => a.lv - b.lv)[0] : null;   // (six of the wing's Pokémon at its cap)
       if (!T) continue;
-      const r = await simRun(await squadFor(towerWaves(T.wing, T.f)), towerWaves(T.wing, T.f), 6);
+      const r = await towerSim(T.wing, T.f, 6);
       if (r.win >= .7 && await playTower(T.wing, T.f)) { DEMO.twNext = false; DEMO.sideTurn = "explore"; return true; }
       failKey("tw" + T.id);
     } else {
@@ -76118,6 +76153,9 @@ async function progress() {
       failKey("ex" + o.h.id + o.l);
     }
   }
+  // and a Stadium session after every Journey stage: 3 Ranked and 3 Link Battles before the story goes on (stadiumTurn)
+  const Q = DEMO.stadQ;
+  if (Q && Q.ranked + Q.link > 0) { if (await stadiumTurn(Q)) return true; DEMO.stadQ = null; }
   // the Journey, in order
   const nd = nextNode();
   if (nd) {
@@ -76133,7 +76171,7 @@ async function progress() {
       if (first) { tried[nd.id] = Math.max(tried[nd.id] || 0, mark); tried[nd.id + "@"] = day; dsay("Giving it a try", `${nd.id} ${nd.name}: ${Math.round(r.win * 100)}% in practice`); }
       const ok = await playNode(nd, first ? "Giving it a try" : nd.badgeWin != null ? "Gym battle" : nd.type === "boss" ? "Big battle" : "Journey");
       if (!ok) { failKey("node" + nd.id); DEMO.focus = nd.id; if (first) return true; }
-      if (ok) { DEMO.twNext = true; return true; }
+      if (ok) { DEMO.twNext = true; DEMO.stadQ = { ranked: 3, link: 3 }; return true; }
     } else if (DEMO.focus !== nd.id) { DEMO.focus = nd.id; dsay("Getting ready", `${nd.id} ${nd.name}: planning moves and held items for it (${Math.round(r.win * 100)}% for now)`); }   // (demoFoes)
   }
   // 3-star clears
@@ -76158,7 +76196,7 @@ async function progress() {
   }
   // Battle Tower
   for (const w of featOn("tower") ? towerOpenWings().filter(id => towerLeft(id) > 0) : []) {
-    const f = towerDone(w) + 1, r = await simRun(await squadFor(towerWaves(w, f)), towerWaves(w, f), 6);
+    const f = towerDone(w) + 1, r = await towerSim(w, f, 6);
     if (r.win >= .6 && await playTower(w, f)) return true;
   }
   // Battle Stadium
@@ -76289,7 +76327,7 @@ function startDemo(fresh) {
   const slot = DEMO_KEY;
   if (fresh) { try { localStorage.removeItem(slot); } catch (e) { /* storage unavailable */ } }
   const ds = readSave(slot);
-  DEMO.on = true; DEMO.paused = false; DEMO.gen++; DEMO.fails = {}; DEMO.record = {}; DEMO.errors = 0; DEMO.log = []; DEMO.focus = null; DEMO.tried = {};
+  DEMO.on = true; DEMO.paused = false; DEMO.gen++; DEMO.fails = {}; DEMO.record = {}; DEMO.errors = 0; DEMO.log = []; DEMO.focus = null; DEMO.tried = {}; DEMO.stadQ = null; DEMO.stadTurn = null;
   DEMO.skew = ds && ds.demoSkew || 0;
   window.Date = DemoDate;
   SESSION = { id: "demo", name: "Demo" };
@@ -77623,12 +77661,13 @@ function sweepHunt(id, l) {
 
 // ---------- Battle Tower ----------
 function launchTower(w, f) {
-  const T = towerFloor(w, f), ids = squadOrToast("tower");
+  const T = towerFloor(w, f), all = squadOrToast("tower"), ids = all && all.filter(k => towerOk(k, w));
+  if (all && !ids.length) { toast(`Only ${REGION_NAME[w]}'s Pokémon can battle in the ${REGION_NAME[w]} Wing.`); return; }
   if (!T || !ids || !towerOpen(w) || f !== towerDone(w) + 1) return;
   route("tower");
   S.stats.battles++;
   startBattle({
-    allies: allySpecs(ids), waves: T.waves.map(wv => convWave(wv, T.lv, wingGen(w))), env: T.env, bb: T.bb, title: `${REGION_NAME[w]} Wing · Floor ${f}`, sub: "Battle Tower", bgm: T.bgm || (f % 5 === 0 ? TOWER_STAR_THEME : TOWER_THEME), winBgm: T.winBgm || (f % 5 === 0 ? "gymWin" : "trainerWin"),
+    allies: ids.filter(owned).map(k => ({ op: k, prog: towerProg(k, T) })), waves: T.waves.map(wv => convWave(wv, T.lv, wingGen(w))), env: T.env,   // (the wing's region, at most the floor's cap) bb: T.bb, title: `${REGION_NAME[w]} Wing · Floor ${f}`, sub: "Battle Tower", bgm: T.bgm || (f % 5 === 0 ? TOWER_STAR_THEME : TOWER_THEME), winBgm: T.winBgm || (f % 5 === 0 ? "gymWin" : "trainerWin"),
     trainer: T.trainer.name, trainerSpr: T.trainer.spr, intro: T.trainer.intro, lose: T.trainer.lose, ball: T.trainer.ball,
     onWin() {
       S.towerW[w] = Math.max(towerDone(w), f); S.tower = Object.values(S.towerW).reduce((a, n) => a + n, 0); S.stats.wins++; S.daily.clear++;
